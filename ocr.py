@@ -1,3 +1,4 @@
+from flask import Flask, escape, request, send_from_directory
 from pdf2image import convert_from_path, convert_from_bytes
 from PIL import Image, ImageChops
 import pytesseract
@@ -8,6 +9,7 @@ import cv2
 import collections
 import os
 import json
+
 multiplier = 2
 
 
@@ -84,6 +86,19 @@ def getRecordImages(img):
     return images
 
 
+def getHeaderImage(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 500, 150, apertureSize=5)
+    lines = cv2.HoughLines(edges, 1, np.pi/180, 1000)
+    boxes, images = [], []
+    for line in lines:
+        for r, theta in line:
+            boxes.append(int((np.sin(theta)*r) + 1000*(np.cos(theta))))
+    boxes = sorted(boxes)
+    boxes = [boxes[x] for x in range(0, len(boxes), 2)]
+    return img[boxes[1]-140:boxes[1], ]
+
+
 def getNameBlock(img):
     # cv2.imshow('s', img[0:60, 100:500])
     # cv2.waitKey(0)
@@ -112,32 +127,65 @@ def getRecordsCollection(pdfPath, rcd) -> RecordCollection:
     return rcd
 
 
-def createDirs():
-    names = ['tmpimg', 'records', 'tmp']
+def createDirs(name):
+    # names = ['tmpimg', 'tmp']
+    # for name in names:
+    shutil.rmtree('./{}/'.format(name))
+    os.makedirs("./{}/".format(name))
+
+
+def ProcessPdfs(pdfs):
+
+    dcts = RecordCollection()
+
+    for pdf in pdfs:
+        print(pdf)
+        getRecordsCollection('pdfs/{}'.format(pdf), dcts)
+
+    namesList = collections.defaultdict(list)
+
+    for record in dcts.records:
+        namesList[record.keys[0]].append(record.getImage())
+
+    header = cv2.imread("header.jpg")
+    for k in namesList.keys():
+        cv2.imwrite("records/{}.jpg".format(str(k).replace("/", "-")),
+                    cv2.vconcat([header, cv2.vconcat(namesList[k])]))
+
+
+createDirs('tmpimg')
+
+
+app = Flask(__name__, static_url_path='/records')
+
+
+@app.route('/processpdfs')
+def processpdf():
+    # print("processing")
+    createDirs('records')
+    pdfs = os.listdir("./pdfs/")
+    ProcessPdfs(pdfs)
+    return('processed<a href="/show-names"><button>Go to List</button></a>')
+
+
+@app.route('/')
+@app.route('/show-names')
+def shownames():
+    names = os.listdir("./records/")
+    content = '<center><a href="/processpdfs"><button>Process Pdfs</button></a></center><br>'
     for name in names:
-        shutil.rmtree('./{}/'.format(name))
-        os.makedirs("./{}/".format(name))
+        name = name[:-4]
+        content += '<a href="show-data?user={}">{}<br>'.format(
+            name.replace(" ", " "), name.replace(" ", " "))
+    return content
 
 
-pdfs = os.listdir("./pdfs/")
-createDirs()
+@app.route('/show-data')
+def showdata():
+    user = request.args.get('user')
+    print(user)
+    return send_from_directory('records', user+".jpg")
 
-dcts = RecordCollection()
 
-print("processing")
-
-for pdf in pdfs:
-    print(pdf)
-    getRecordsCollection('pdfs/{}'.format(pdf), dcts)
-
-namesList = collections.defaultdict(list)
-
-for record in dcts.records:
-    namesList[record.keys[0]].append(record.getImage())
-
-for k in namesList.keys():
-    cv2.imwrite("records/{}.jpg".format(str(k).replace("/", "-")),
-                cv2.vconcat(namesList[k]))
-
-print("processed")
-# cv2.destroyAllWindows()
+if __name__ == '__main__':
+    app.run(host="0.0.0.0")
